@@ -1,3 +1,4 @@
+import os
 import pandas as pd
 import numpy as np
 
@@ -321,11 +322,21 @@ print(comparison.to_string(index=False))
 # ==========================================
 # 20A. Select Final Model
 # ==========================================
+# Picked in code, by lowest MdAPE, instead of being hard-coded -
+# so the "best" model actually matches what the comparison table says.
 
-final_model = hgb_model
+models = {
+    "Random Forest": rf_model,
+    "Gradient Boosting": gb_model,
+    "HistGradientBoosting": hgb_model,
+}
 
-print("\nFinal Model Selected: HistGradientBoostingRegressor")
-print("Reason: It achieved the lowest RMSE, highest R2, and lowest MdAPE among the tested models.")
+best_name = comparison.sort_values("MdAPE (%)").iloc[0]["Model"]
+final_model = models[best_name]
+
+y_pred_final_price = np.expm1(final_model.predict(X_test))
+
+print("\nFinal Model Selected:", best_name, "(lowest MdAPE)")
 # ==========================================
 # 21. Actual vs Predicted Price
 # ==========================================
@@ -336,7 +347,7 @@ plt.figure(figsize=(8, 6))
 
 plt.scatter(
     y_test_price,
-    y_pred_hgb_price,
+    y_pred_final_price,
     alpha=0.5
 )
 
@@ -345,8 +356,8 @@ plt.ylabel("Predicted Price (₹)")
 plt.title("Actual vs Predicted House Prices")
 
 # Perfect prediction line
-min_price = min(y_test_price.min(), y_pred_hgb_price.min())
-max_price = max(y_test_price.max(), y_pred_hgb_price.max())
+min_price = min(y_test_price.min(), y_pred_final_price.min())
+max_price = max(y_test_price.max(), y_pred_final_price.max())
 
 plt.plot(
     [min_price, max_price],
@@ -360,12 +371,12 @@ plt.show()
 # 22. Residual Plot
 # ==========================================
 
-residuals = y_test_price - y_pred_hgb_price
+residuals = y_test_price - y_pred_final_price
 
 plt.figure(figsize=(8, 6))
 
 plt.scatter(
-    y_pred_hgb_price,
+    y_pred_final_price,
     residuals,
     alpha=0.5
 )
@@ -377,17 +388,30 @@ plt.axhline(
 
 plt.xlabel("Predicted Price (₹)")
 plt.ylabel("Residual (₹)")
-plt.title("Residual Plot - HistGradientBoosting")
+plt.title(f"Residual Plot - {best_name}")
 
 plt.tight_layout()
 plt.show()
 # ==========================================
-# 23. Random Forest Feature Importance
+# 23. Final Model Feature Importance (permutation)
 # ==========================================
+# Permutation importance on the final model, not always the Random
+# Forest's built-in importances - so this matches whichever model won.
+
+from sklearn.inspection import permutation_importance
+
+perm_result = permutation_importance(
+    final_model,
+    X_test,
+    y_test,
+    n_repeats=5,
+    random_state=42,
+    n_jobs=-1
+)
 
 feature_importance = pd.DataFrame({
-    "Feature": X_train.columns,
-    "Importance": rf_model.feature_importances_
+    "Feature": X_test.columns,
+    "Importance": perm_result.importances_mean
 })
 
 feature_importance = feature_importance.sort_values(
@@ -415,21 +439,26 @@ plt.barh(
 
 plt.xlabel("Importance")
 plt.ylabel("Feature")
-plt.title("Top 15 Feature Importance - Random Forest")
+plt.title(f"Top 15 Feature Importance (Permutation) - {best_name}")
 
 plt.tight_layout()
 plt.show()
 # ==========================================
 # 25. Per-Property-Type Evaluation
 # ==========================================
+# "apartment" is included: it's the one-hot baseline (all type_*
+# columns are 0), so it needs its own mask instead of a column check.
 
 property_type_columns = [
+    "apartment",
     "type_house",
     "type_land",
     "type_villa",
     "type_commercial",
     "type_other"
 ]
+
+type_cols = [c for c in X_test.columns if c.startswith("type_")]
 
 print("\n===================================")
 print("   PER-PROPERTY-TYPE EVALUATION")
@@ -438,14 +467,17 @@ print("===================================")
 for type_column in property_type_columns:
 
     # Select test rows belonging to this type
-    type_mask = X_test[type_column] == 1
+    if type_column == "apartment":
+        type_mask = X_test[type_cols].sum(axis=1) == 0
+    else:
+        type_mask = X_test[type_column] == 1
 
     if type_mask.sum() == 0:
         print(f"\n{type_column}: No test samples")
         continue
 
     actual_type = y_test_price[type_mask]
-    predicted_type = y_pred_hgb_price[type_mask]
+    predicted_type = y_pred_final_price[type_mask]
 
     type_mae = mean_absolute_error(
         actual_type,
@@ -479,27 +511,14 @@ for type_column in property_type_columns:
 # ==========================================
 # 26. Save Final Model
 # ==========================================
+# Single save block (the original had this twice). Saves whichever
+# model won the comparison, not a hard-coded HistGradientBoosting.
 
 import joblib
 
-# Save HistGradientBoosting model
-joblib.dump(hgb_model, "models/house_price_model.pkl")
+os.makedirs("models", exist_ok=True)
 
-# Save feature names used during training
-joblib.dump(X.columns.tolist(), "models/model_features.pkl")
-
-print("\n===================================")
-print("       MODEL SAVED")
-print("===================================")
-print("Model file    : models/house_price_model.pkl")
-print("Features file : models/model_features.pkl")
-# ==========================================
-# 26. Save Final Model
-# ==========================================
-
-import joblib
-
-joblib.dump(hgb_model, "models/house_price_model.pkl")
+joblib.dump(final_model, "models/house_price_model.pkl")
 joblib.dump(X.columns.tolist(), "models/model_features.pkl")
 
 # Verify saved model
@@ -509,6 +528,7 @@ loaded_features = joblib.load("models/model_features.pkl")
 print("\n===================================")
 print("       MODEL SAVED SUCCESSFULLY")
 print("===================================")
+print("Model         :", best_name)
 print("Model file    : models/house_price_model.pkl")
 print("Features file : models/model_features.pkl")
 print("Number of features:", len(loaded_features))

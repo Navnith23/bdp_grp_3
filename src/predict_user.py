@@ -3,10 +3,12 @@ import numpy as np
 import joblib
 
 # --------------------------------------------------
-# Load model, feature list, and cleaned dataset
+# Load cleaned dataset
+#
+# Model and feature list are loaded further down, once we know
+# whether this is a land or building property (they use different
+# feature sets - see train_model_split.py).
 # --------------------------------------------------
-model = joblib.load("models/house_price_model.pkl")
-features = joblib.load("models/model_features.pkl")
 df = pd.read_csv("data/processed/cleaned.csv")
 
 
@@ -26,6 +28,7 @@ property_age = float(input("Property age (years): "))
 
 print("\nDistrict options:")
 districts = [
+    "Alappuzha",
     "Ernakulam",
     "Idukki",
     "Kannur",
@@ -53,6 +56,7 @@ district = districts[district_choice - 1]
 
 print("\nProperty type:")
 property_types = [
+    "apartment",
     "commercial",
     "house",
     "land",
@@ -69,6 +73,33 @@ if type_choice < 1 or type_choice > len(property_types):
     raise ValueError("Invalid property type selection.")
 
 property_type = property_types[type_choice - 1]
+
+# --------------------------------------------------
+# Route to the land model or the building model
+# --------------------------------------------------
+is_land = property_type == "land"
+
+if is_land:
+    model = joblib.load("models/house_price_model_land.pkl")
+    features = joblib.load("models/model_features_land.pkl")
+else:
+    model = joblib.load("models/house_price_model_building.pkl")
+    features = joblib.load("models/model_features_building.pkl")
+
+# --------------------------------------------------
+# Structural zeros
+#
+# Matches preprocess.py: a plot of land has no building, and an
+# apartment has no land area of its own.
+# --------------------------------------------------
+if property_type == "land":
+    built_up_sqft = 0.0
+    bedrooms = 0.0
+    bathrooms = 0.0
+    property_age = 0.0
+
+if property_type == "apartment":
+    land_area_cents = 0.0
 
 
 # --------------------------------------------------
@@ -103,46 +134,33 @@ row["bedrooms_missing"] = 0
 # --------------------------------------------------
 # Capped features
 #
-# These limits are based on the maximum values
-# currently present in cleaned.csv.
+# In training these are 0/1 flags (was this value beyond the 99th
+# percentile seen in the data?), not the clipped value itself. The
+# value fed to the model is also clipped to that same max, matching
+# what cap_outliers() does in preprocess.py.
 # --------------------------------------------------
-row["land_area_cents_capped"] = min(
-    land_area_cents,
-    df["land_area_cents"].max()
-)
+capped_inputs = {
+    "land_area_cents": land_area_cents,
+    "built_up_sqft": built_up_sqft,
+    "bedrooms": bedrooms,
+    "bathrooms": bathrooms,
+    "parking": parking,
+    "property_age": property_age,
+}
 
-row["built_up_sqft_capped"] = min(
-    built_up_sqft,
-    df["built_up_sqft"].max()
-)
-
-row["bedrooms_capped"] = min(
-    bedrooms,
-    df["bedrooms"].max()
-)
-
-row["bathrooms_capped"] = min(
-    bathrooms,
-    df["bathrooms"].max()
-)
-
-row["property_age_capped"] = min(
-    property_age,
-    df["property_age"].max()
-)
-
-row["parking_capped"] = min(
-    parking,
-    df["parking"].max()
-)
+for col, value in capped_inputs.items():
+    cap = df[col].max()
+    row[col] = min(value, cap)
+    row[f"{col}_capped"] = int(value > cap)
 
 
 # --------------------------------------------------
 # Number of amenities
 #
-# No amenities entered in this basic version.
+# No amenities entered in this basic version, so use the dataset's
+# typical (median) count rather than 0 - most listings have several.
 # --------------------------------------------------
-row["n_amenities"] = 0
+row["n_amenities"] = int(df["n_amenities"].median())
 
 
 # --------------------------------------------------
@@ -212,6 +230,7 @@ print("\n" + "=" * 45)
 print("           PREDICTION RESULT")
 print("=" * 45)
 
+print(f"Model used    : {'land' if is_land else 'building'}")
 print(f"District      : {district}")
 print(f"Property type : {property_type}")
 print(f"Built-up area : {built_up_sqft:,.0f} sqft")
@@ -224,3 +243,5 @@ print(f"Property age  : {property_age:.0f} years")
 print("-" * 45)
 print(f"Predicted Price : ₹{predicted_price:,.2f}")
 print("=" * 45)
+print("Note: this is a rough estimate. Median error on the test set")
+print("is roughly 30%, and higher for land, commercial and other.")
